@@ -1,0 +1,15 @@
+# Virtual Environment
+.venv/
+
+# VS Code
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment Variables
+.env

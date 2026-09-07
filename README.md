@@ -273,11 +273,11 @@ The results demonstrate that explainable recommendations can improve transparenc
 
 ## 📷 Application Preview
 
-```markdown
+### Home Page
 ![Home Page](assets/homepage.png)
 
+### Recommendations
 ![Recommendations](assets/recommendation.png)
-```
 
 ---
 

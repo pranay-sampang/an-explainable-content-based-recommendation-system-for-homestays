@@ -275,10 +275,43 @@ st.markdown(
         text-align: center;
         color: var(--slate);
     }
+
+    /* -------- Multiselect dropdown popover -------- */
+    /* Streamlit/BaseWeb portals this popup to the end of <body>, not
+       inside section[data-testid="stSidebar"] -- so the sidebar-scoped
+       "* { color: ... }" rule above never reaches it, and it was
+       falling back to its unstyled dark default (most visible as a
+       plain black box when a multiselect has no options left to show,
+       e.g. every amenity already picked). These selectors target the
+       popover directly by its component attributes instead of by DOM
+       ancestry, so they apply wherever it's actually rendered.
+       Not visually verified against a live run -- check it renders as
+       expected. */
+    div[data-baseweb="popover"] {
+        background: var(--card) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 10px !important;
+    }
+    div[data-baseweb="popover"] ul[data-baseweb="menu"] {
+        background: var(--card) !important;
+    }
+    div[data-baseweb="popover"] li {
+        color: var(--charcoal) !important;
+    }
+    div[data-baseweb="popover"] li:hover {
+        background: var(--bg) !important;
+    }
+    /* The "no options left" message itself -- shown as plain text with
+       no distinguishing wrapper in most Streamlit versions, so this
+       catches any leftover unstyled text inside the popover. */
+    div[data-baseweb="popover"] * {
+        color: var(--slate);
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
 
 
 # ==========================================
@@ -373,6 +406,146 @@ AMENITY_COLUMNS = [
     "pickup_dropoff_service",
 ]
 
+FEATURE_NAMES = tfidf.get_feature_names_out()
+
+
+# ==========================================
+# ITEM-TO-ITEM SIMILARITY (Section 3.7.3: "user selects a homestay")
+# ==========================================
+# This mirrors the mechanism actually evaluated in Chapter 4 -- each
+# homestay's own row in tfidf_matrix is used as the query vector,
+# rather than a synthetic preference profile. Kept alongside the
+# preference-search mode below rather than replacing it, since they
+# answer different questions ("what's like X" vs "what fits Y").
+
+def recommend_similar_to(homestay_name, top_n):
+
+    matches = df.index[df["homestay_name"] == homestay_name]
+
+    if len(matches) == 0:
+        return pd.DataFrame(), None
+
+    seed_position = matches[0]
+    seed_vector = tfidf_matrix[seed_position]
+
+    similarity_scores = cosine_similarity(
+        seed_vector,
+        tfidf_matrix
+    ).flatten()
+
+    result_df = df.copy()
+    result_df["similarity"] = similarity_scores
+
+    # Exclude the seed homestay itself from its own recommendations.
+    result_df = result_df.drop(index=seed_position)
+
+    recommendations = (
+        result_df
+        .sort_values("similarity", ascending=False)
+        .head(top_n)
+    )
+
+    return recommendations, df.loc[seed_position]
+
+
+def get_shared_keywords(seed_position, candidate_position, top_k=5):
+    """Non-zero TF-IDF terms both records share, ranked by combined
+    weight -- the 'common descriptive keywords' referenced in Section
+    3.8.1. Note these come straight from the tokenised vocabulary
+    (Section 3.7.1), so results can include fragments like place-name
+    pieces or proximity tokens rather than natural-language phrases --
+    the same caveat already discussed in Section 4.2."""
+
+    seed_vec = tfidf_matrix[seed_position].toarray().flatten()
+    candidate_vec = tfidf_matrix[candidate_position].toarray().flatten()
+
+    shared_mask = (seed_vec > 0) & (candidate_vec > 0)
+
+    if not shared_mask.any():
+        return []
+
+    shared_terms = FEATURE_NAMES[shared_mask]
+    shared_weights = seed_vec[shared_mask] * candidate_vec[shared_mask]
+
+    order = np.argsort(shared_weights)[::-1][:top_k]
+
+    return list(shared_terms[order])
+
+
+def generate_similarity_explanation(source_row, candidate_row):
+    """Explanation for item-to-item mode: attributes the SOURCE homestay
+    and the CANDIDATE recommendation have in common, per Section 3.8.1 --
+    as opposed to generate_explanation() below, which compares a
+    candidate against the user's stated preferences."""
+
+    reasons = []
+
+    if candidate_row["block"] == source_row["block"]:
+        reasons.append(
+            f"Also located in {candidate_row['block']}"
+        )
+
+    if candidate_row["category"] == source_row["category"]:
+        reasons.append(
+            f"Same {candidate_row['category']} category"
+        )
+
+    shared_amenities = [
+        amenity.replace("_", " ").title()
+        for amenity in AMENITY_COLUMNS
+        if source_row.get(amenity, 0) == 1 and candidate_row.get(amenity, 0) == 1
+    ]
+
+    if shared_amenities:
+        reasons.append(
+            "Both offer " + ", ".join(shared_amenities)
+        )
+
+    if abs(candidate_row["price"] - source_row["price"]) <= 300:
+        reasons.append(
+            f"Comparable price (₹{int(candidate_row['price']):,}/night)"
+        )
+
+    matched_landmarks = [
+        display_name
+        for display_name, key in TOURIST_LOCATIONS.items()
+        if source_row.get(f"{key}_proximity") == "Very Close"
+        and candidate_row.get(f"{key}_proximity") == "Very Close"
+    ]
+
+    if matched_landmarks:
+        reasons.append(
+            "Both very close to " + ", ".join(matched_landmarks)
+        )
+
+    # Rating is excluded from the vectorised profile (Section 3.8.3), and
+    # is only ever surfaced here if NEITHER record's location/rating data
+    # was affected by the geocoding name-collision failure mode (Section
+    # 3.3) -- same gating as generate_explanation() below.
+    source_reliable = not source_row.get("location_corrected", False)
+    candidate_reliable = not candidate_row.get("location_corrected", False)
+
+    if (
+        source_reliable
+        and candidate_reliable
+        and abs(candidate_row["rating"] - source_row["rating"]) <= 0.5
+    ):
+        reasons.append(
+            f"Similar rating ({candidate_row['rating']:.1f}/5)"
+        )
+
+    shared_keywords = get_shared_keywords(
+        source_row.name,
+        candidate_row.name,
+    )
+
+    if shared_keywords:
+        reasons.append(
+            "Shares the descriptors: " + ", ".join(shared_keywords)
+        )
+
+    return reasons
+
 
 # ==========================================
 # HERO
@@ -396,55 +569,6 @@ st.markdown(
 
 
 # ==========================================
-# SIDEBAR: TRAVELER PREFERENCES
-# ==========================================
-
-st.sidebar.markdown("## Your Preferences")
-
-selected_block = st.sidebar.selectbox(
-    "Preferred area",
-    sorted(
-        df["block"].dropna().unique()
-    )
-)
-
-budget = st.sidebar.slider(
-    "Maximum budget (₹ / night)",
-    min_value=int(df["price"].min()),
-    max_value=int(df["price"].max()),
-    value=3000,
-    step=100,
-)
-
-min_rating = st.sidebar.slider(
-    "Minimum rating",
-    0.0,
-    5.0,
-    4.0,
-    0.1,
-)
-
-selected_amenities = st.sidebar.multiselect(
-    "Amenities you want",
-    AMENITY_COLUMNS,
-    format_func=lambda a: a.replace("_", " ").title(),
-)
-
-selected_landmarks = st.sidebar.multiselect(
-    "Want to be close to...",
-    list(TOURIST_LOCATIONS.keys()),
-    help="Recommendations near these spots will be prioritized -- this isn't a hard filter.",
-)
-
-top_n = st.sidebar.slider(
-    "Number of recommendations",
-    1,
-    10,
-    5,
-)
-
-
-# ==========================================
 # BUDGET → PRICE BAND
 # ==========================================
 # The old version injected the raw budget number as a literal token
@@ -454,6 +578,8 @@ top_n = st.sidebar.slider(
 # "premium"). This derives the correct band directly from the live
 # data's own price_band boundaries, rather than hardcoding thresholds
 # that could drift out of sync with however notebook 04 actually built them.
+# Defined here, before the sidebar, since the preference-search branch
+# below calls it while building user_text.
 
 def budget_to_price_band(budget_value, data):
 
@@ -478,22 +604,105 @@ def budget_to_price_band(budget_value, data):
 
 
 # ==========================================
-# USER QUERY CONSTRUCTION
+# SIDEBAR: SEARCH MODE
 # ==========================================
 
-price_band_token = budget_to_price_band(budget, df)
+st.sidebar.markdown("## Find Recommendations")
 
-landmark_tokens = [
-    f"{TOURIST_LOCATIONS[name]}_very_close"
-    for name in selected_landmarks
-]
+search_mode = st.sidebar.radio(
+    "How would you like to search?",
+    ["Describe what I want", "I already like a homestay"],
+    help=(
+        "'Describe what I want' searches by the preferences you set below. "
+        "'I already like a homestay' finds homestays most similar to one "
+        "you pick -- the same content-based comparison used throughout "
+        "this project's evaluation (Section 3.7.3)."
+    ),
+)
 
-user_text = " ".join([
-    selected_block,
-    " ".join(selected_amenities),
-    price_band_token,
-    " ".join(landmark_tokens),
-])
+top_n = st.sidebar.slider(
+    "Number of recommendations",
+    1,
+    10,
+    5,
+)
+
+st.sidebar.markdown("---")
+
+if search_mode == "Describe what I want":
+
+    st.sidebar.markdown("### Your Preferences")
+
+    selected_block = st.sidebar.selectbox(
+        "Preferred area",
+        sorted(
+            df["block"].dropna().unique()
+        )
+    )
+
+    budget = st.sidebar.slider(
+        "Maximum budget (₹ / night)",
+        min_value=int(df["price"].min()),
+        max_value=int(df["price"].max()),
+        value=3000,
+        step=100,
+    )
+
+    min_rating = st.sidebar.slider(
+        "Minimum rating",
+        0.0,
+        5.0,
+        4.0,
+        0.1,
+    )
+
+    selected_amenities = st.sidebar.multiselect(
+        "Amenities you want",
+        AMENITY_COLUMNS,
+        format_func=lambda a: a.replace("_", " ").title(),
+    )
+
+    selected_landmarks = st.sidebar.multiselect(
+        "Want to be close to...",
+        list(TOURIST_LOCATIONS.keys()),
+        help="Recommendations near these spots will be prioritized -- this isn't a hard filter.",
+    )
+
+    # Query construction lives here, inside the branch, because it
+    # references selected_block/selected_amenities/selected_landmarks --
+    # names that only exist in this mode. Computing it unconditionally at
+    # module level would raise a NameError as soon as someone switched to
+    # "I already like a homestay", since budget_to_price_band(budget, df)
+    # would run before budget was ever defined.
+    price_band_token = budget_to_price_band(budget, df)
+
+    landmark_tokens = [
+        f"{TOURIST_LOCATIONS[name]}_very_close"
+        for name in selected_landmarks
+    ]
+
+    user_text = " ".join([
+        selected_block,
+        " ".join(selected_amenities),
+        price_band_token,
+        " ".join(landmark_tokens),
+    ])
+
+else:
+
+    st.sidebar.markdown("### Pick a Homestay You Like")
+
+    selected_homestay_name = st.sidebar.selectbox(
+        "Homestay",
+        sorted(df["homestay_name"].dropna().unique()),
+        help=(
+            "We'll rank every other homestay by similarity to this one's "
+            "full profile (category, village, price band, amenities, "
+            "proximity, and description) -- not just the few attributes "
+            "used in the preference search."
+        ),
+    )
+
 
 
 # ==========================================
@@ -597,77 +806,130 @@ def generate_explanation(row):
 
 
 # ==========================================
+# SHARED CARD RENDERER
+# ==========================================
+# Both search modes end up with a DataFrame of recommendations plus a
+# per-row list of explanation strings -- only how those two things are
+# produced differs (recommend_homestays/generate_explanation vs.
+# recommend_similar_to/generate_similarity_explanation above). Rendering
+# is identical either way, so it's kept in one place rather than
+# duplicated per mode, which is what let the two card layouts drift
+# apart if only one copy ever got edited.
+
+def render_recommendation_card(row, reasons):
+
+    badge_class = (
+        "badge-gold"
+        if str(row["category"]).lower() == "gold"
+        else "badge-silver"
+    )
+
+    reasons_html = "".join(
+        f'<div class="why-reason">✓ {r}</div>'
+        for r in reasons
+    )
+
+    st.markdown(
+        f"""
+        <div class="rec-card">
+            <div class="rec-header">
+                <h3 class="rec-name">{row['homestay_name']}</h3>
+                <span class="badge {badge_class}">{row['category']}</span>
+            </div>
+            <div class="rec-location">📍 {row['village']}, {row['block']}</div>
+            <div class="stat-row">
+                <div class="stat">
+                    <span class="stat-label">Rating</span>
+                    <span class="stat-value">★ {row['rating']:.1f}</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Price / night</span>
+                    <span class="stat-value">₹{int(row['price']):,}</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Reviews</span>
+                    <span class="stat-value">{int(row['review_count'])}</span>
+                </div>
+            </div>
+            <div class="rec-description">{row['description']}</div>
+            <div class="why-box">
+                <div class="why-title">Why recommended</div>
+                {reasons_html if reasons_html else '<div class="why-reason">Matches your general preferences</div>'}
+                <div class="match-score">{row['similarity']*100:.0f}% match</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ==========================================
 # GENERATE RESULTS
 # ==========================================
 
-if st.button("Find My Homestay"):
+button_label = (
+    "Find My Homestay"
+    if search_mode == "Describe what I want"
+    else "Show Similar Homestays"
+)
 
-    recommendations = recommend_homestays()
+if st.button(button_label):
 
-    if len(recommendations) == 0:
+    if search_mode == "Describe what I want":
 
-        st.markdown(
-            """
-            <div class="empty-state">
-                <strong>No homestays match every filter.</strong><br>
-                Try raising your budget or lowering the minimum rating --
-                Kalimpong's homestays are mostly small, family-run places,
-                so narrow combinations can rule out the whole list.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        recommendations = recommend_homestays()
 
-    else:
-
-        st.markdown(
-            f"**{len(recommendations)} homestays match your preferences**"
-        )
-        st.write("")
-
-        for _, row in recommendations.iterrows():
-
-            badge_class = (
-                "badge-gold"
-                if str(row["category"]).lower() == "gold"
-                else "badge-silver"
-            )
-
-            reasons = generate_explanation(row)
-            reasons_html = "".join(
-                f'<div class="why-reason">✓ {r}</div>'
-                for r in reasons
-            )
+        if len(recommendations) == 0:
 
             st.markdown(
-                f"""
-                <div class="rec-card">
-                    <div class="rec-header">
-                        <h3 class="rec-name">{row['homestay_name']}</h3>
-                        <span class="badge {badge_class}">{row['category']}</span>
-                    </div>
-                    <div class="rec-location">📍 {row['village']}, {row['block']}</div>
-                    <div class="stat-row">
-                        <div class="stat">
-                            <span class="stat-label">Rating</span>
-                            <span class="stat-value">★ {row['rating']:.1f}</span>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-label">Price / night</span>
-                            <span class="stat-value">₹{int(row['price']):,}</span>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-label">Reviews</span>
-                            <span class="stat-value">{int(row['review_count'])}</span>
-                        </div>
-                    </div>
-                    <div class="rec-description">{row['description']}</div>
-                    <div class="why-box">
-                        <div class="why-title">Why recommended</div>
-                        {reasons_html if reasons_html else '<div class="why-reason">Matches your general preferences</div>'}
-                        <div class="match-score">{row['similarity']*100:.0f}% match</div>
-                    </div>
+                """
+                <div class="empty-state">
+                    <strong>No homestays match every filter.</strong><br>
+                    Try raising your budget or lowering the minimum rating --
+                    Kalimpong's homestays are mostly small, family-run places,
+                    so narrow combinations can rule out the whole list.
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
+
+        else:
+
+            st.markdown(
+                f"**{len(recommendations)} homestays match your preferences**"
+            )
+            st.write("")
+
+            for _, row in recommendations.iterrows():
+                reasons = generate_explanation(row)
+                render_recommendation_card(row, reasons)
+
+    else:
+
+        recommendations, seed_row = recommend_similar_to(
+            selected_homestay_name,
+            top_n,
+        )
+
+        if seed_row is None or len(recommendations) == 0:
+
+            st.markdown(
+                """
+                <div class="empty-state">
+                    <strong>Couldn't find that homestay.</strong><br>
+                    Try picking another one from the list.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        else:
+
+            st.markdown(
+                f"**Homestays most similar to {selected_homestay_name}**"
+            )
+            st.write("")
+
+            for _, row in recommendations.iterrows():
+                reasons = generate_similarity_explanation(seed_row, row)
+                render_recommendation_card(row, reasons)

@@ -147,9 +147,10 @@ This improves user understanding and trust in the recommendation process.
 |-----------|------------|
 | Programming Language | Python |
 | Data Analysis | Pandas, NumPy |
-| NLP | Scikit-learn |
+| NLP | Scikit-learn (TF-IDF tokenisation), Python re module |
 | Recommendation Engine | TF-IDF, Cosine Similarity |
 | Web Application | Streamlit |
+| Description Generation | Qwen 3 via Ollama |
 | Development Environment | Jupyter Notebook |
 
 ---
@@ -276,8 +277,11 @@ The results demonstrate that explainable recommendations can improve transparenc
 ### Home Page
 ![Home Page](assets/homepage.png)
 
-### Recommendations
-![Recommendations](assets/recommendation.png)
+### Search based Recommendation
+![Recommendations](assets/search.png)
+
+### Preference based Recommendation
+![Recommendations](assets/preference.png)
 
 ---
 

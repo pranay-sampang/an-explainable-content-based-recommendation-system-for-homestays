@@ -149,9 +149,7 @@ This improves user understanding and trust in the recommendation process.
 | Data Analysis | Pandas, NumPy |
 | NLP | Scikit-learn |
 | Recommendation Engine | TF-IDF, Cosine Similarity |
-| Visualisation | Matplotlib, Seaborn |
 | Web Application | Streamlit |
-| Data Collection | Web Scraping & Manual Curation |
 | Development Environment | Jupyter Notebook |
 
 ---
@@ -184,6 +182,7 @@ an-explainable-content-based-recommendation-system-for-homestays/
 ├── requirements.txt
 ├── README.md
 └── assets/
+```
 
 ## 🚀 Installation
 
@@ -274,12 +273,10 @@ The results demonstrate that explainable recommendations can improve transparenc
 
 ## 📷 Application Preview
 
-Add screenshots of your Streamlit application here.
-
 ```markdown
 ![Home Page](assets/homepage.png)
 
-![Recommendations](assets/recommendations.png)
+![Recommendations](assets/recommendation.png)
 ```
 
 ---
@@ -309,7 +306,7 @@ Feel free to use the code for learning and research with appropriate attribution
 
 ## 🤝 Acknowledgements
 
-- University of Greenwich
+- London Metropolitan University
 - MSc Artificial Intelligence Programme
 - Streamlit Community
 - Scikit-learn Developers
